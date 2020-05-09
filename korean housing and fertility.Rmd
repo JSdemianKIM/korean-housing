@@ -1,0 +1,473 @@
+---
+title: "surv_hosung"
+author: "Jeongsoo"
+date: "5/6/2020"
+output: html_document
+---
+
+
+
+```{r}
+library(dplyr)
+library(car)
+library(haven)
+library(foreign)
+library(purrr)
+library(survival)
+library(splines)
+library(ggplot2)
+library(survminer)
+library(eha)
+library(survey)
+
+mdat<-read.csv("C:/Users/korea/Dropbox/Housing and Fertility/mdat0917.csv", header = TRUE, sep = ",")
+mdat<-mdat%>%
+  filter(marital%in%c(1,2))%>%
+  filter(age>=15&age<=40)%>%
+  mutate(nkids=ifelse(is.na(nkids)==T, 0, nkids))%>%
+  group_by(id)%>%
+  mutate(prevkid=lag(nkids, order_by = id), prevmar=lag(marital, order_by = id), prevhous=lag(hous, order_by=id))%>%
+  arrange(id, year)%>%
+  ungroup()
+mdat$marr_event<-ifelse(mdat$marital==2&mdat$prevmar==1, 1, 0)
+mdat$first_kid<-ifelse(mdat$prevkid==0&mdat$nkids==1, 1, 0)
+mdat$second_kid<-ifelse(mdat$prevkid==1&mdat$nkids==2, 1, 0)
+mdat$third_kid<-ifelse(mdat$prevkid==2&mdat$nkids==3, 1, 0)
+
+first_yr<-mdat%>%
+  group_by(id)%>%
+  summarise(first_yr=min(year))
+
+mdat<-left_join(mdat, first_yr, by="id")
+mdat$time<-mdat$year-mdat$first_yr
+
+
+#single to marriage
+marr_risk<-mdat%>%  #singles at marriage risk
+  filter(prevmar==1)
+  #becaus of lagging, the year of single is previous year. so -1 from current year
+marr_event<-mdat%>%  #marred at first birth risk
+  filter(marr_event==1)%>%
+  group_by(id)%>%
+  summarize(marr_yr=min(year))
+marr<-left_join(marr_risk, marr_event, by="id")
+marr$year2=min(marr$year)
+marr$event<-marr$marr_event
+marr$t<-marr$marr_yr-marr$year2
+marr$time<-ifelse(is.na(marr$t)==T, 0, marr$t)
+
+
+fit<-survfit(Surv(time=time, event=event)~1, data=marr)
+summary(fit)
+fit2<-survfit(Surv(time, event)~prevhous, data=marr)
+ggsurvplot(fit2)
+
+des1<-svydesign(ids=~1, weights=~wt, data=marr)
+svyby(~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+fbi, ~sec_event, des1, FUN=svymean, na.rm=T)
+
+```
+
+#table(marr$event)
+#   0    1 
+# 4015  831 
+#table(marr$time)
+#   0    1    2    3    4    5    6    7    8 
+#4015  197  121   95   99   75   96   79   69 
+
+```{r}
+#marriage to first birth
+first_risk<-mdat%>%  #marred at first birth risk
+  filter(prevkid==0)
+fb_event<-first_risk%>%  #events during the observing period
+  filter(first_kid==1)
+zb_yr<-first_risk%>%
+  group_by(id)%>%
+  summarise(zb_yr=min(year)-1) #becaus of lagging, the year of no_kids is previous year. so -1 from current year
+first<-left_join(zb_yr, fb_event, by="id") # merge zero birth  and first birth together with NAs
+first$event<-ifelse(is.na(first$first_kid)==T, 0, 1)
+first$t<-first$year-first$zb_yr
+first$time<-ifelse(is.na(first$t)==T, 0, first$t)
+#table(first$event)
+#   0    1 
+#3250 1167 
+#table(first$time)
+#   0    1    2    3    4    5    6    7    8 
+#3250  418  200  149  116   89   83   67   45 
+
+
+
+#first to second birth
+second_risk<-mdat%>%  #first birth at second birth risk
+  filter(prevkid==1)
+sb_event<-second_risk%>%  #events during the observing period
+  filter(second_kid==1)
+fb_yr<-second_risk%>%
+  group_by(id)%>%
+  summarise(fb_yr=min(year)-1) #becaus of lagging, the year of first_kid is previous year. so -1 from current year
+second<-left_join(fb_yr, sb_event, by="id") # merge first birth and second birth together with NAs
+second$event<-ifelse(is.na(second$second_kid)==T, 0, 1)
+second$t<-second$year-second$fb_yr
+second$time<-ifelse(is.na(second$t)==T, 0, second$t)
+#table(second$event)
+#  0    1 
+#2724 1167 
+#table(second$time)
+#   0    1    2    3    4    5    6    7    8 
+#2724  438  344  192  112   47   16   14    4 
+
+
+#second to third birth
+third_risk<-mdat%>%  #second birth at third birth risk
+  filter(prevkid==2)
+tb_event<-third_risk%>%  #events during the observing period
+  filter(third_kid==1)
+sb_yr<-third_risk%>%
+  group_by(id)%>%
+  summarise(sb_yr=min(year)-1) #becaus of lagging, the year of second_kid is previous year. so -1 from current year
+third<-left_join(sb_yr, tb_event, by="id") # merge second birth and third birth together with NAs
+third$event<-ifelse(is.na(third$third_kid)==T, 0, 1)
+third$t<-third$year-third$sb_yr
+third$time<-ifelse(is.na(third$t)==T, 0, third$t)
+#table(third$event)
+#   0    1 
+#3123  245 
+#table(third$time)
+#   0    1    2    3    4    5    6    7    8 
+#3123   86   61   37   26   19   12    3    1 
+
+
+
+# singles don't have hhid matching, so test survdiff without hh inner matching
+
+survdiff(Surv(time, event)~hous, data=marr)
+
+#only 159 out of 1167 match so test indibidual level remove mached female id
+
+fem_first<-first%>%
+  filter(sex==2)
+
+mal_first<-first%>%
+  filter(sex==1)%>%
+  transmute(hus_id = id,
+            hus_hh=hh,
+            hus_yr=year,
+            hus_age = age,
+            hus_emp= employ, 
+            hus_edu=edu)
+
+m_first<-inner_join(fem_first, mal_first, by=c("hh"="hus_hh", "year"="hus_yr") )
+m_first<-m_first%>%
+  filter(is.na(wt)==F, wt>0)
+
+
+#m_marr_risk_2$first_event<-ifelse(is.na(m_marr_risk_2$first_event)==T, 0, m_marr_risk_2$first_event)
+#m_marr_risk_2$urban<-ifelse(is.na(m_marr_risk_2$urban)==T, 0, m_marr_risk_2$urban)
+#m_marr_risk_2$prevhous<-as.factor(ifelse(is.na(m_marr_risk_2$prevhous)==T, 1, m_marr_risk_2$prevhous))
+
+survdiff(Surv(time, event)~hous, data=first)
+
+#only 213 out of 1167 match so test indibidual level remove mached female id
+
+fem_second<-second%>%
+  filter(sex==2)
+
+mal_second<-second%>%
+  filter(sex==1)%>%
+  transmute(hus_id = id,
+            hus_hh=hh,
+            hus_yr=year,
+            hus_age = age,
+            hus_emp= employ, 
+            hus_edu=edu)
+
+m_second<-inner_join(fem_second, mal_second, by=c("hh"="hus_hh", "year"="hus_yr") )
+m_second<-m_second%>%
+  filter(is.na(wt)==F, wt>0)
+
+#only 45 out of 245 match so test indibidual level remove mached female id
+
+fem_third<-third%>%
+  filter(sex==2)
+
+mal_third<-third%>%
+  filter(sex==1)%>%
+  transmute(hus_id = id,
+            hus_hh=hh,
+            hus_yr=year,
+            hus_age = age,
+            hus_emp= employ, 
+            hus_edu=edu)
+
+m_third<-inner_join(fem_third, mal_third, by=c("hh"="hus_hh", "year"="hus_yr") )
+m_third<-m_third%>%
+  filter(is.na(wt)==F, wt>0)
+
+
+
+length(unique(m_marr_risk_2$hh))
+tapply(m_marr_risk_2$hh, m_marr_risk_2$year, function(x) length(unique(x)))
+
+
+fem_mar_risk_3<-marr_risk_3%>%
+  filter(sex==2)
+
+mal_mar_risk_3<-marr_risk_3%>%
+  filter(sex==1)%>%
+  transmute(hus_id = id,
+            hus_hh=hh,
+            hus_yr=year,
+            hus_age = age,
+            hus_age5=age5,
+            hus_emp= employ, 
+            hus_edu=edu)
+
+m_marr_risk_3<-inner_join(fem_mar_risk_3, mal_mar_risk_3, by=c("hh"="hus_hh", "year"="hus_yr") )
+m_marr_risk_3<-m_marr_risk_3%>%
+  filter(is.na(wt)==F, wt>0)
+
+#m_marr_risk_3$sec_event<-ifelse(is.na(m_marr_risk_3$sec_event)==T, 0, m_marr_risk_3$sec_event)
+#m_marr_risk_3$urban<-ifelse(is.na(m_marr_risk_3$urban)==T, 0, m_marr_risk_3$urban)
+#m_marr_risk_3$prevhous<-as.factor(ifelse(is.na(m_marr_risk_3$prevhous)==T, 1, m_marr_risk_3$prevhous))
+
+survdiff(Surv(time, sec_event)~prevhous,data=m_marr_risk_3)
+
+
+#fit1<-glm(first_event~age5+hus_age5+I(edu<hus_edu), family=binomial, data=m_marr_risk_2)
+
+#summary(fit1)
+#newd<-data.frame(age5=levels(marr_risk_2$age5))
+
+#newd$pred<-predict(fit1, type = "response", newdata=newd)
+#plot(pred~age5, newd, type="l")
+
+# third
+marr_risk_4$age5<-cut(marr_risk_4$age, breaks = seq(20,50,10))
+fem_mar_risk_4<-marr_risk_4%>%
+  filter(sex==2)
+
+mal_mar_risk_4<-marr_risk_4%>%
+  filter(sex==1)%>%
+  transmute(hus_id = id,
+            hus_hh=hh,
+            hus_yr=year,
+            hus_age = age,
+            hus_age5=age5,
+            hus_emp= employ, 
+            hus_edu=edu)
+
+m_marr_risk_4<-inner_join(fem_mar_risk_4, mal_mar_risk_4, by=c("hh"="hus_hh", "year"="hus_yr") )
+m_marr_risk_4<-m_marr_risk_4%>%
+  filter(is.na(wt)==F, wt>0)
+
+#m_marr_risk_4$third_event<-ifelse(is.na(m_marr_risk_4$third_event)==T, 0, m_marr_risk_4$third_event)
+#m_marr_risk_4$urban<-ifelse(is.na(m_marr_risk_4$urban)==T, 0, m_marr_risk_4$urban)
+#m_marr_risk_4$prevhous<-as.factor(ifelse(is.na(m_marr_risk_4$prevhous)==T, 1, m_marr_risk_4$prevhous))
+
+survdiff(Surv(time, third_event)~prevhous,data=m_marr_risk_4)
+
+
+library(survey)
+des<-svydesign(ids=~1,  weights=~wt, data=m_marr_risk_2)
+
+plot(survfit(Surv(time, event)~hous, data=third), col=c(1:3))
+survdiff(Surv(time, first_event)~prevhous, data=m_marr_risk_2)
+
+
+svyby(~age+hus_age+first_event,~year, FUN=svymean, des)
+fit1<-svyglm(first_event~factor(age)+(ses)+(edu)+urban, family=binomial, design=des)
+summary(fit1)
+
+m_marr_risk_2<-m_marr_risk_2%>%
+  filter(complete.cases(prevhous,age5,edu,ses,urban))%>%
+ # filter(age5!="(40,45]", age5!="(15,20]")%>%
+  filter(ses>0)
+
+#m_marr_risk_2$age5<-car::Recode(m_marr_risk_2$age5, recodes = "'(20,30]'='(20,30]'; else = '30+'  ", as.factor=T)
+
+m_marr_risk_2$age5<-factor(m_marr_risk_2$age5 )
+m_marr_risk_2$hus_age5<-factor(m_marr_risk_2$hus_age5)
+
+des2<-svydesign(ids=~1, weights=~wt, data=m_marr_risk_2)
+svyby(~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban, ~first_event, des2, FUN=svymean, na.rm=T)
+
+library(tableone)
+CreateTableOne(c("prevhouse", "age5", "hus_age5","I(employ==1)" ), strata = "first_event", data = m_marr_risk_2)
+summary(svyglm(first_event~prevhous, family=binomial, des2))
+summary(svyglm(first_event~age5, family=binomial, des2))
+summary(svyglm(first_event~hus_age5, family=binomial, des2))
+summary(svyglm(first_event~I(employ==1), family=binomial, des2))
+summary(svyglm(first_event~I(edu>=7), family=binomial, des2))
+summary(svyglm(first_event~I(hus_edu>=7), family=binomial, des2))
+summary(svyglm(first_event~I(ses<=3), family=binomial, des2))
+summary(svyglm(first_event~urban, family=binomial, des2))
+
+
+#firstbi<-survfit(Surv(fbi, first_event)~prevhous, marr_risk_2)
+#plot(firstbi, col=1:3)
+#~prevhous+urban+bs(age)+employ+ses+ses*prevhous
+library(eha)
+defit<-coxreg(Surv(fbi, first_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban, m_marr_risk_2, weights=wt/mean(wt))
+
+cph1<-coxph(Surv(fbi, first_event)~prevhous, m_marr_risk_2, weights=wt/mean(wt))
+summary(cph1)
+AIC(cph1)
+cph2<-coxph(Surv(fbi, first_event)~prevhous+age5+hus_age5, m_marr_risk_2, weights=wt/mean(wt))
+summary(cph2)
+
+
+cph3<-coxph(Surv(fbi, first_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban, m_marr_risk_2, weights=wt/mean(wt))
+summary(cph3)
+
+cph3i<-coxph(Surv(fbi, first_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+year*prevhous, m_marr_risk_2, weights=wt/mean(wt))
+summary(cph3)
+
+AIC(cph1)
+AIC(cph2)
+AIC(cph3)
+
+library(stargazer)
+myexp<-function(x) exp(x)
+stargazer(cph1, cph2, cph3, type="html", out = "C:/Users/korea/Dropbox/Housing and Fertility/cox_fbi_test3_without.html", style = "demography", keep.stat = c("n"),
+          covariate.labels = c("LongTermRent","ShortTermRent", "Mother Age 30 - 40", "Mother Age 40+", "Father Age 30 - 40", "Father Age 40+", "Mother Employed",  "Mother College Edu", "Father College Edu","High SES Household", "Urban Residence"  ), t.auto = F, p.auto = F, ci=T,
+          apply.coef = myexp, column.labels = rep("Time to First Birth",3), dep.var.labels.include=F)
+
+plot(survfit(cph3))
+
+m_marr_risk_3<-m_marr_risk_3%>%
+  filter(complete.cases(prevhous,age5,edu,ses,urban, hus_age5, fbi))%>%
+  #filter(age5!="(40,45]", age5!="(15,20]")%>%
+  filter(ses>0)#%>%
+  #mutate(hus_age5new= ifelse(hus_age5=="(15,20]"|hus_age5=="(25,30]", "lt30", factor(hus_age5) ))
+
+#m_marr_risk_3$age5<-car::Recode(m_marr_risk_3$age5, recodes = "'(20,30]'='(20,30]'; else = '30+'  ", as.factor=T)
+m_marr_risk_3$age5<-factor(m_marr_risk_3$age5 )
+m_marr_risk_3$hus_age5<-factor(m_marr_risk_3$hus_age5)
+
+
+des3<-svydesign(ids=~1, weights=~wt, data=m_marr_risk_3)
+svyby(~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+fbi, ~sec_event, des3, FUN=svymean, na.rm=T)
+
+plot(survfit(Surv(time,sec_event)~prevhous, data=m_marr_risk_3), col=c(1:3))
+survdiff(Surv(time, first_event)~prevhous,data=m_marr_risk_3)
+
+summary(svyglm(sec_event~prevhous, family=binomial, des3))
+summary(svyglm(sec_event~age5, family=binomial, des3))
+summary(svyglm(sec_event~hus_age5, family=binomial, des3))
+summary(svyglm(sec_event~I(employ==1), family=binomial, des3))
+summary(svyglm(sec_event~I(edu>=7), family=binomial, des3))
+summary(svyglm(sec_event~I(hus_edu>=7), family=binomial, des3))
+summary(svyglm(sec_event~I(ses<=3), family=binomial, des3))
+summary(svyglm(sec_event~urban, family=binomial, des3))
+summary(svyglm(fbi~sec_event, family=gaussian, des3))
+
+library(tableone)
+CreateTableOne(c("prevhous", "age5", "hus_age5","urban", "fbi" ), strata = "sec_event", data = m_marr_risk_3)
+svyCreateTableOne(c("prevhous", "age5", "hus_age5","urban", "fbi" ), strata = "sec_event", data = des3)
+
+secbi<- coxph(Surv(secbi, sec_event)~prevhous, m_marr_risk_3, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(secbi)
+secbi2<-coxph(Surv(secbi, sec_event)~prevhous+age5+hus_age5, m_marr_risk_3, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(secbi2)
+
+secbi3<-coxph(Surv(secbi, sec_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+scale(fbi), m_marr_risk_3, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(secbi3)
+
+secbi3i<-coxph(Surv(secbi, sec_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+scale(fbi)+year*prevhous, m_marr_risk_3, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(secbi3)
+
+AIC(secbi)
+AIC(secbi2)
+AIC(secbi3)
+AIC(secbi3i)
+
+stargazer(secbi, secbi2, secbi3, type="html", out = "C:/Users/korea/Dropbox/Housing and Fertility/cox_sbi_test3_without.html", style = "demography", keep.stat = c("n"),
+          covariate.labels = c("LongTermRent","ShortTermRent","Mother Age 30 - 40", "Mother Age 40+", "Father Age 30 - 40", "Father Age 40+", "Mother Employed",  "Mother College Edu", "Father College Edu","High SES Household", "Urban Residence", "First birth interval"  ), t.auto = F, p.auto = F, ci=T,
+          apply.coef = myexp, column.labels = rep("Time to Second Birth",3), dep.var.labels.include=F)
+
+
+# stargazer(secbi, secbi2, secbi3, type="html", out = "~/Dropbox/Housing and Fertility/cox_secbi.html", style = "demography")
+
+plot(survfit(secbi))
+survdiff(Surv(time, sec_event)~prevhous,data=m_marr_risk_3)
+
+
+
+cph2<-coxph(Surv(secbi, sec_event)~scale(fbi)+prevhous+urban+bs(age)+employ+ses, marr_risk_3,subset=wt>0, weights=wt/mean(wt, na.rm=T))
+summary(cph2)
+
+
+# thirbi<-survfit(Surv(thirbi, third_event)~prevhous, marr_risk_4)
+# plot(thirbi, col=1:3)
+# cph3<-coxph(Surv(thirbi, third_event)~scale(fbi)+prevhous+urban+bs(age)+employ+ses+ses*prevhous, marr_risk_4,subset=wt>0, weights=wt/mean(wt, na.rm=T))
+# summary(cph3)
+
+#m_marr_risk_4$age5<-car::Recode(m_marr_risk_4$age5, recodes = "'(20,30]'='(20,30]'; else = '30+'  ", as.factor=T)
+m_marr_risk_4$age5<-factor(m_marr_risk_4$age5 )
+m_marr_risk_4$hus_age5<-factor(m_marr_risk_4$hus_age5)
+
+
+des4<-svydesign(ids=~1, weights=~wt, data=m_marr_risk_4)
+svyby(~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+secbi, ~third_event, des4, FUN=svymean, na.rm=T)
+
+plot(survfit(Surv(time,third_event)~prevhous, data=m_marr_risk_4), col=c(1:3))
+
+summary(svyglm(third_event~prevhous, family=binomial, des4))
+summary(svyglm(third_event~age5, family=binomial, des4))
+summary(svyglm(third_event~hus_age5, family=binomial, des4))
+summary(svyglm(third_event~I(employ==1), family=binomial, des4))
+summary(svyglm(third_event~I(edu>=7), family=binomial, des4))
+summary(svyglm(third_event~I(hus_edu>=7), family=binomial, des4))
+summary(svyglm(third_event~I(ses<=3), family=binomial, des4))
+summary(svyglm(third_event~urban, family=binomial, des4))
+summary(svyglm(thirbi~third_event, family=gaussian, des4))
+library(tableone)
+svyCreateTableOne(c("prevhous", "age5", "hus_age5","urban", "fbi", "secbi" ), strata = "third_event", data = des4)
+
+thirbi<- coxph(Surv(thirbi, third_event)~prevhous, m_marr_risk_4, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(thirbi)
+
+thirbi2<-coxph(Surv(thirbi, third_event)~prevhous+age5+hus_age5, m_marr_risk_4, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(thirbi2)
+
+thirbi3<-coxph(Surv(thirbi, third_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+scale(fbi)+scale(secbi), m_marr_risk_4, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(thirbi3)
+
+thirbi3i<-coxph(Surv(thirbi, third_event)~prevhous+age5+hus_age5+I(employ==1)+I(edu>=7)+I(hus_edu>=7)+I(ses<=3)+urban+scale(fbi)+year*prevhous, m_marr_risk_4, weights=wt/mean(wt, na.rm=T), subset= wt>0)
+summary(thirbi3)
+
+AIC(thirbi)
+AIC(thirbi2)
+AIC(thirbi3)
+AIC(thirbi3i)
+
+stargazer(thirbi, thirbi2, thirbi3, type="html", out = "C:/Users/korea/Dropbox/Housing and Fertility/cox_thirbi_test3_without.html", style = "demography", keep.stat = c("n"),
+          covariate.labels = c("LongTermRent","ShortTermRent", "Mother Age 30 - 40", "Mother Age 40+", "Father Age 30 - 40", "Father Age 40+", "Mother Employed",  "Mother College Edu", "Father College Edu","High SES Household", "Urban Residence", "First birth interval", "Second birth interval"  ), t.auto = F, p.auto = F, ci=T,
+          apply.coef = myexp, column.labels = rep("Time to Third Birth",3), dep.var.labels.include=F)
+
+##marriage
+
+#marrdat<-mdat%>%
+#  filter(prevmar==1)
+
+#marmod<-glm(marevent~factor(round(age/5))+prevhous+sex+ses+urban-1,family=binomial, mdat)
+#summary(marmod)
+
+## descriptive analysis
+
+#library(pastecs)
+#library(descr)
+#stat.desc(a12b)
+#t.test(a12b$nkids)
+
+#CrossTable(a12b$hous, a12b$nkids, prop.r=T, chisq=T)
+#CrossTable(a20b$hous, a20b$nkids, prop.r=T, chisq=T)
+mdat$short<-ifelse(mdat$hous=='2ShortTermRent', 1, 0)
+mdat$long<-ifelse(mdat$hous=='1LongTermRent', 1, 0)
+mdat$owner<-ifelse(mdat$hous=='0OwnHouse', 1, 0)
+
+
+```
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
